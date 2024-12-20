@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drone Video Projection on Cesium</title>
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.123/Build/Cesium/Cesium.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.123/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <style>
+        html, body, #cesiumContainer {
+            width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
+        }
+
+#video {
+    position: absolute;
+    bottom: 75px;
+    right: 0;
+    width: 320px;
+    height: 180px;
+  }
+  #inputcsv{
+    position: absolute;
+    top: 100px;
+    left: 50px;
+  }
+  #random_button{
+    position: absolute;
+    top: 200px;
+    left: 50px;
+  }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+
+    <input id="inputcsv" type="file" accept=".csv" />
+    <!--<button id="random_button">do</button>
+
+    <pre id="output"></pre>-->
+    
+    <script type="module">
+
+        Cesium.Ion.defaultAccessToken = 'token';
+
+        let air_data;
+        let points = [];
+        let travelPath;
+
+        let flightStartTime, flightEndTime;
+        let cesiumFlightStartTime, cesiumFlightEndTime;
+        let flightDuration;
+
+        const positionProperty = new Cesium.SampledPositionProperty();
+        
+
+        // read inputs
+        document.getElementById("inputcsv").addEventListener("input", function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                Papa.parse(file, {
+                    header: true,
+                    dynamicTyping: true,
+                    complete: function(results) {
+                        //document.getElementById('output').innerText = JSON.stringify(results.data, null, 2);
+                        air_data = results.data;
+                        console.log(air_data)
+
+                        plot_data(air_data)
+                    },
+                    error: function(error) {
+                        console.error('Error parsing CSV:', error);
+                    }
+                });
+            }
+        });
+/*
+        document.getElementById("random_button").addEventListener("click", function(event) {
+            points[0].position = Cesium.Cartesian3.fromDegrees(air_data[0]['OSD.longitude'], air_data[0]['OSD.latitude'], air_data[0]['OSD.height [m]']+10);
+        });
+*/
+        const viewer = new Cesium.Viewer('cesiumContainer', {
+            terrain: Cesium.Terrain.fromWorldTerrain(),
+        });
+
+        const osmBuildings = await Cesium.createOsmBuildingsAsync();
+        viewer.scene.primitives.add(osmBuildings);
+
+        function plot_data(data){ 
+            if(data !== undefined){
+
+                const pathPoints = [];
+
+                // plotting and saving points
+                for (let i = 0; i < data.length; ++i) {
+                    const dataPoint = data[i];
+                    const pos = Cesium.Cartesian3.fromDegrees(dataPoint['OSD.longitude'], dataPoint['OSD.latitude'], dataPoint['OSD.height [m]'])
+
+                    const point = viewer.entities.add({
+                        description: `(${dataPoint['OSD.longitude']}, ${dataPoint['OSD.latitude']}, ${dataPoint['OSD.height [m]']}), ${dataPoint['OSD.flyTime [s]']} s, 
+                        ${dataPoint['OSD.pitch']} deg, ${dataPoint['OSD.roll']} deg, ${dataPoint['OSD.yaw']} deg, ${dataPoint['CUSTOM.travelled [m]']} m`,
+                        position: pos,
+                        point: {pixelSize: 5, color: Cesium.Color.RED},
+                        properties: {
+                            timePoint: dataPoint['CUSTOM.updateTime'],
+                            flyTyme: dataPoint['OSD.flyTime [s]'],
+                            pitch: dataPoint['OSD.pitch'],
+                            roll: dataPoint['OSD.roll'],
+                            yaw: dataPoint['OSD.yaw'],
+                            travelled: dataPoint['CUSTOM.travelled [m]']
+                        },
+                    });
+                    
+                    points.push(
+                        point
+                    )
+                
+                    pathPoints.push(pos);
+                    //const startTime = new Date(points[0].properties.getValue().timePoint);
+                    //const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.fromDate(startTime), dataPoint['OSD.flyTime [s]'], new Cesium.JulianDate());
+                    const time = Cesium.JulianDate.fromDate(new Date(dataPoint['CUSTOM.updateTime']));
+                    //console.log(time);
+                    positionProperty.addSample(time, pos);
+                }
+
+                //console.log(points[0]);
+                //console.log(points[0].properties.getValue().timePoint);
+                //console.log(points[points.length-1])
+                //
+
+                // setting clock data
+                console.log(new Date(points[0].properties.getValue().timePoint).toString());
+
+                flightStartTime = new Date(points[0].properties.getValue().timePoint);
+                flightEndTime = new Date(points[points.length-1].properties.getValue().timePoint);
+                flightDuration = flightEndTime - flightStartTime;
+
+                cesiumFlightStartTime = Cesium.JulianDate.fromDate(flightStartTime);
+                cesiumFlightEndTime = Cesium.JulianDate.fromDate(flightEndTime);
+
+                console.log(flightStartTime);
+                console.log(flightEndTime);
+                console.log(flightDuration / 1000);
+
+                viewer.clock.startTime = cesiumFlightStartTime.clone();
+                viewer.clock.stopTime = cesiumFlightEndTime.clone();
+                viewer.clock.currentTime = cesiumFlightStartTime.clone();
+                viewer.timeline.zoomTo(cesiumFlightStartTime, cesiumFlightEndTime);
+                viewer.clock.shouldAnimate = true;
+
+                // plotting path
+                /*
+                travelPath = viewer.entities.add({
+                    polyline: {
+                        positions: pathPoints,
+                        width: 2,
+                        arcType: Cesium.ArcType.NONE,
+                        material: new Cesium.ColorMaterialProperty(Cesium.Color.YELLOW)
+                    }
+                });
+*/
+                const tracked = viewer.entities.add({
+                    availability: new Cesium.TimeIntervalCollection([ new Cesium.TimeInterval({ start: cesiumFlightStartTime, stop: cesiumFlightEndTime }) ]),
+                    position: positionProperty,
+                    point: { pixelSize: 30, color: Cesium.Color.GREEN },
+                    path: new Cesium.PathGraphics({ width: 3 })
+                });
+                console.log(positionProperty);
+                console.log(tracked);
+                viewer.trackedEntity = tracked;
+                //viewer.zoomTo(points[0]);
+            }
+        }
+        
+
+        
+    </script>
+</body>
+</html>

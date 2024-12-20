@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drone Video Projection on Cesium</title>
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.123/Build/Cesium/Cesium.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.123/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <style>
+        html, body, #cesiumContainer {
+            width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
+        }
+
+#video {
+    position: absolute;
+    bottom: 75px;
+    right: 0;
+    width: 320px;
+    height: 180px;
+  }
+  #inputcsv{
+    position: absolute;
+    top: 100px;
+    left: 50px;
+  }
+  #random_button{
+    position: absolute;
+    top: 100px;
+    left: 50px;
+  }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+
+    <input id="inputcsv" type="file" accept=".csv" />
+    
+    <script type="module">
+
+Cesium.Ion.defaultAccessToken = 'token';
+
+var date = new Date();
+var dynamic_lighting = {value: false}
+var terrain_shadows = {value: false}
+var entity_shadows = {value: false}
+
+var clock = new Cesium.Clock({
+  //startTime : Cesium.JulianDate.fromIso8601(date.toISOString()),
+  currentTime : Cesium.JulianDate.fromIso8601(date.toISOString()),
+  //stopTime : Cesium.JulianDate.fromIso8601("2013-12-26"),
+  clockRange : Cesium.ClockRange.UNBOUNDED,//Cesium.ClockRange.LOOP_STOP,
+  clockStep : Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER
+});
+
+var viewer = new Cesium.Viewer('cesiumContainer', {
+  animation: false, // <-- this is the time control
+  geocoder: false,
+  homeButton: false,
+  sceneModePicker: false,
+  timeline: false,
+  navigationHelpButton: false,
+  navigationInstructionsInitiallyVisible: false,
+  fullscreenButton: false,
+  baseLayerPicker: false,
+  scene3DOnly: true,
+  shadows : entity_shadows.value,
+  terrainShadows : terrain_shadows.value,
+  clock : clock,
+  infoBox : false, //Disable InfoBox widget
+  selectionIndicator : false, //Disable selection indicator
+  terrain: Cesium.Terrain.fromWorldTerrain({}),
+  requestVertexNormals: true
+});
+
+var scene = viewer.scene; //add a scene to the viewer
+var canvas = viewer.canvas; //add a canvas to the viewer
+scene.skyAtmosphere = new Cesium.SkyAtmosphere();
+scene.sun =  new Cesium.Sun();
+
+scene.sunBloom = true
+
+//	// Get a reference to the ellipsoid, with terrain on it.  (This API may change soon)
+var ellipsoid = viewer.scene.globe.ellipsoid;
+
+viewer.scene.globe.enableLighting = dynamic_lighting.value;
+//Enable depth testing so things behind the terrain disappear.
+viewer.scene.globe.depthTestAgainstTerrain = true;
+
+var shadowMap = viewer.shadowMap;
+shadowMap.maxmimumDistance = 10000.0;
+shadowMap.size = 2048
+shadowMap.softShadows = true
+
+// position the camera roughly over Australia
+viewer.camera.setView({
+  destination : Cesium.Cartesian3.fromDegrees(-95.754259, 29.577192, 500)
+})
+
+// core code
+
+var position = Cesium.Cartesian3.fromDegrees(0, 0, 0);
+//var position = Cesium.Cartesian3.fromDegrees(-95.754259, 29.577192, 0.0);
+var heading = 0;
+var pitch = 0;
+var roll = 0;
+var hpr = new Cesium.HeadingPitchRoll(heading, pitch, roll);
+var orientation = Cesium.Transforms.headingPitchRollQuaternion(position, hpr);
+
+viewer.entities.add({
+  id : "vehicle",
+    position : position,
+    orientation : orientation,
+    point: { pixelSize: 30, color: Cesium.Color.GREEN },
+});
+
+var show_sensor_footprint = {value: true}
+
+var default_camera_settings = {
+  fov: viewer.camera.frustum.fov,
+  aspect_ratio: viewer.camera.frustum.aspectRatio
+}
+
+var aircraft = {};
+var pos_target = {lat:null, lon:null, alt_wgs84:null, show:true, color:Cesium.Color.FUCHSIA};
+//var data_stream = {};
+
+var pos_target_lines = scene.primitives.add(new Cesium.PolylineCollection);
+
+var sensor_lines = scene.primitives.add(new Cesium.PolylineCollection);
+var sensor_footprint = undefined;
+
+
+
+// setting up initial scene
+//CUSTOM.updateTime,OSD.flyTime [s],OSD.latitude,OSD.longitude,OSD.height [m],OSD.altitude [m],OSD.pitch,OSD.roll,OSD.yaw,GIMBAL.pitch,GIMBAL.roll,GIMBAL.yaw
+
+const data = JSON.parse('[{"CUSTOM.updateTime":"2019/01/09 19:17:09.328","OSD.flyTime [s]":15.5,"OSD.latitude":29.577245,"OSD.longitude":-95.754261,"OSD.height [m]":3.3,"OSD.altitude [m]":123.1,"OSD.pitch":-16.0,"OSD.roll":19.3,"OSD.yaw":-28.0,"GIMBAL.pitch":0.0,"GIMBAL.roll":0.0,"GIMBAL.yaw":-28.9}]');
+console.log(data);
+
+const dataPoint = data[0];
+const pos = Cesium.Cartesian3.fromDegrees(dataPoint['OSD.longitude'], dataPoint['OSD.latitude'], dataPoint['OSD.height [m]'])
+
+const point = viewer.entities.add({
+                        description: `(${dataPoint['OSD.longitude']}, ${dataPoint['OSD.latitude']}, ${dataPoint['OSD.height [m]']}), ${dataPoint['OSD.flyTime [s]']} s, 
+                        ${dataPoint['OSD.pitch']} deg, ${dataPoint['OSD.roll']} deg, ${dataPoint['OSD.yaw']} deg, ${dataPoint['CUSTOM.travelled [m]']} m`,
+                        position: pos,
+                        point: {pixelSize: 5, color: Cesium.Color.RED},
+                        properties: {
+                            timePoint: dataPoint['CUSTOM.updateTime'],
+                            flyTyme: dataPoint['OSD.flyTime [s]'],
+                            pitch: dataPoint['OSD.pitch'],
+                            roll: dataPoint['OSD.roll'],
+                            yaw: dataPoint['OSD.yaw'],
+                            travelled: dataPoint['CUSTOM.travelled [m]']
+                        },
+                    });
+
+
+update_aircraft_data()
+
+
+
+function update_aircraft_data() {
+  //if (data_stream.ATTITUDE && data_stream.GLOBAL_POSITION_INT) {
+    var entity = viewer.entities.getById('vehicle');
+    
+    aircraft.lat = dataPoint['OSD.latitude'] //data_stream.GLOBAL_POSITION_INT.lat*Math.pow(10.0, -7);
+    aircraft.lon = dataPoint['OSD.longitude'] //data_stream.GLOBAL_POSITION_INT.lon*Math.pow(10.0, -7);
+    aircraft.alt_wgs84 = dataPoint['OSD.height [m]'] //data_stream.GLOBAL_POSITION_INT.alt*Math.pow(10.0, -3);
+    aircraft.roll = dataPoint['OSD.roll'] //data_stream.ATTITUDE.roll
+    aircraft.pitch = dataPoint['OSD.pitch'] //data_stream.ATTITUDE.pitch
+    aircraft.yaw = dataPoint['OSD.yaw'] //data_stream.ATTITUDE.yaw
+    
+    aircraft.position = Cesium.Cartesian3.fromDegrees(aircraft.lon, aircraft.lat, aircraft.alt_wgs84);
+    aircraft.hpr = new Cesium.HeadingPitchRoll(aircraft.yaw+Math.PI/2, -aircraft.pitch, -aircraft.roll);
+    aircraft.orientation = Cesium.Transforms.headingPitchRollQuaternion(aircraft.position, aircraft.hpr);
+    
+    entity.position = aircraft.position;
+    entity.orientation = aircraft.orientation;
+      
+      draw_pos_target();
+      
+      draw_sensor_bounds();
+        
+          viewer.trackedEntity = undefined
+          scene.screenSpaceCameraController.enableRotate = true;
+              scene.screenSpaceCameraController.enableTranslate = true;
+              scene.screenSpaceCameraController.enableZoom = true;
+              scene.screenSpaceCameraController.enableTilt = true;
+              scene.screenSpaceCameraController.enableLook = true;
+
+        
+        viewer.camera.frustum.fov = default_camera_settings.fov; // this works
+            viewer.camera.frustum.aspectRatio = default_camera_settings.aspect_ratio; // this works
+
+  //} 
+};
+
+function update_pos_target_data(pos_target_data){
+    	pos_target.lon = pos_target_data.lon*Math.pow(10.0, -7)
+        pos_target.lat = pos_target_data.lat*Math.pow(10.0, -7)
+        pos_target.alt_wgs84 = pos_target_data.alt_wgs84
+    }
+    
+    function draw_pos_target(){
+    	var pos_target_line = get_by_id(pos_target_lines, 'pos_target_line')
+    	if (pos_target_line != null){
+    		pos_target_lines.remove(pos_target_line)
+    	}
+    	
+    	pos_target_lines.add({
+            id : 'pos_target_line',
+            show : pos_target.show,
+            positions : Cesium.Cartesian3.fromDegreesArrayHeights([pos_target.lon, pos_target.lat, pos_target.alt_wgs84,
+                                                                   aircraft.lon, aircraft.lat, aircraft.alt_wgs84]),
+            width : 1,
+            material : Cesium.Material.fromType('Color', {
+                color : pos_target.color
+            })
+        })
+    		
+    }
+
+
+function draw_sensor_bounds(){
+    	
+        var hpr = new Cesium.HeadingPitchRoll(aircraft.yaw-Math.PI/2, aircraft.pitch, aircraft.roll);
+        
+        var hpr_mount1 = new Cesium.HeadingPitchRoll(0, -Math.PI/2, 0); // rotation to correct axis to image
+        var hpr_mount2 = new Cesium.HeadingPitchRoll(0, 0, -Math.PI/2);
+        
+        var hpr_mount3 = new Cesium.HeadingPitchRoll(0, -Math.PI/2, 0); // this is the actual mount offset
+        
+        var vehicleQuat = new Cesium.Quaternion
+        var mountQuat = new Cesium.Quaternion
+        var mountQuat1 = new Cesium.Quaternion
+        var mountQuat2 = new Cesium.Quaternion
+        var mountQuat3 = new Cesium.Quaternion
+        var vehiclePos = aircraft.position
+        vehicleQuat = Cesium.Transforms.headingPitchRollQuaternion(vehiclePos, hpr)
+        mountQuat1 = Cesium.Quaternion.fromHeadingPitchRoll(hpr_mount1)
+        mountQuat2 = Cesium.Quaternion.fromHeadingPitchRoll(hpr_mount2)
+        mountQuat3 = Cesium.Quaternion.fromHeadingPitchRoll(hpr_mount3)
+        Cesium.Quaternion.multiply(mountQuat2, mountQuat1, mountQuat)
+        Cesium.Quaternion.multiply(mountQuat3, mountQuat, mountQuat)
+        Cesium.Quaternion.multiply(vehicleQuat, mountQuat, vehicleQuat)
+        var camRot = Cesium.Matrix3.fromQuaternion(vehicleQuat);  	
+      
+        var camPos = aircraft.position
+      
+        var camProj = new Cesium.Matrix3(1/1.8,  0.0,  0.5,
+                           0.0,  (122.6/94.4)/1.8,  0.5,
+                           0.0,  0.0,  1);
+        
+        var camDistR = new Cesium.Cartesian3(-2.60e-01, 8.02e-02, 0.0); // not used yet
+        var camDistT = new Cesium.Cartesian2(-2.42e-04, 2.61e-04); // not used yet
+        
+          // compute ground footprint on ellipsoid
+          var coords = [];
+          var lookDir = new Cesium.Cartesian3();
+          var invCamProj = Cesium.Matrix3.inverse(camProj, new Cesium.Matrix3());
+      
+          for (var i = 0; i < 4; i++) {
+      
+              var corner;
+              if (i === 0) {
+                  //corner = new Cartesian3(0.0, 0.0, 1.0);
+                  corner = new Cesium.Cartesian3(-0.5, -0.5, 1.0);
+              }
+              else if (i === 1) {
+                  //corner = new Cartesian3(1.0, 0.0, 1.0);
+                  corner = new Cesium.Cartesian3(1.5, -0.5, 1.0);
+              }
+              else if (i === 2) {
+                  //corner = new Cartesian3(1.0, 1.0, 1.0);
+                  corner = new Cesium.Cartesian3(1.5, 1.5, 1.0);
+              }
+              else if (i === 3) {
+                  //corner = new Cartesian3(0.0, 1.0, 1.0);
+                  corner = new Cesium.Cartesian3(-0.5, 1.5, 1.0);
+              }
+      
+              // transform normalized coordinates to look direction in camera frame
+              Cesium.Matrix3.multiplyByVector(invCamProj, corner, lookDir);
+      
+              // transform look dir to globe frame
+              Cesium.Matrix3.multiplyByVector(camRot, lookDir, lookDir);
+      
+              // intersect ray
+              var ground;
+              var ray = new Cesium.Ray(camPos, lookDir);
+              // var intersects = Cesium.IntersectionTests.rayEllipsoid(ray, Cesium.Ellipsoid.WGS84);
+              var intersects = scene.globe.pick(ray, scene);
+              if (intersects == null) {
+      //               ground = IntersectionTests.grazingAltitudeLocation(ray, Cesium.Ellipsoid.WGS84);
+                 ground = Cesium.Ray.getPoint(ray, 4000.0);
+              }
+              else { 
+      //               ground = Cesium.Ray.getPoint(ray, intersects.start); // only valid if Cesium.IntersectionTests.rayEllipsoid(ray, Cesium.Ellipsoid.WGS84); is used
+                ground = intersects;
+              }
+              coords[i] = ground;
+              
+          }
+          
+          var sensor_line = get_by_id(sensor_lines, 'sensor_line')
+        if (sensor_line != null){
+          sensor_lines.remove(sensor_line)
+        }
+          
+          if (sensor_footprint) {
+            viewer.scene.primitives.remove(sensor_footprint)
+          sensor_footprint = undefined
+          }
+          
+          if (show_sensor_footprint.value){
+            
+         
+        
+          if (coords) {
+            sensor_lines.add({
+                  id : 'sensor_line',
+                  show : pos_target.show,
+                  positions : [aircraft.position, coords[0], aircraft.position, coords[1], aircraft.position, coords[2], aircraft.position, coords[3], aircraft.position],
+                  width : 2,
+                  material : Cesium.Material.fromType('Color', {
+                      color : Cesium.Color.SNOW
+                  })
+              })
+      
+              var sensor_footprint_geom = new Cesium.GeometryInstance({
+                  id: 'sensor_footprint',
+                  geometry: new Cesium.PolygonGeometry({
+                      polygonHierarchy: {
+                          positions: [coords[0], coords[1], coords[2], coords[3]]
+                      }
+                  }),
+                  attributes: {
+                      color: Cesium.ColorGeometryInstanceAttribute.fromColor(new Cesium.Color(1.0, 0.0, 0.0, 0.4))
+                  }
+              });
+            
+      
+              sensor_footprint = new Cesium.GroundPrimitive({geometryInstances : [sensor_footprint_geom],
+                                       allowPicking : false,
+                                       asynchronous : false
+                                      });
+            scene.primitives.add(sensor_footprint)
+           }
+        }
+      }
+
+      function get_by_id(collection, id_to_match){
+  for (var i = 0; i < collection.length; i++) {
+      var  obj = collection.get(i);
+      if (id_to_match == obj.id) return obj
+  }
+  return null
+}
+
+
+
+
+    </script>
+</body>
+</html>
